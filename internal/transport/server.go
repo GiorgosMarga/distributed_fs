@@ -1,74 +1,109 @@
 package transport
 
 import (
-	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
-	"net"
+	"sync"
+	"time"
 
-	"github.com/GiorgosMarga/dfs/internal/message"
+	"github.com/GiorgosMarga/dfs/internal/filesystem"
+	"github.com/GiorgosMarga/dfs/internal/raft"
 )
 
-type Server struct {
-	listenAddr string
-	ln         net.Listener
+type RaftResponse struct {
+	err   error
+	index uint64
 }
 
-func NewServer(listenAddr string) *Server {
+type RaftRequest struct {
+	command []byte
+	done    chan RaftResponse
+}
+
+type Server struct {
+	transport       Transport
+	pendingRequests map[uint64]chan RaftResponse
+	raft            *raft.Raft
+	mu              *sync.Mutex
+}
+
+type ServerOpts struct {
+	address    string
+	serializer Serializer
+}
+
+func NewServer(listenAddr string, serverOpts ServerOpts) *Server {
 	return &Server{
-		listenAddr: listenAddr,
+		transport:       NewTCPTransport(listenAddr, NewGOBSerializer()),
+		raft:            raft.NewRaft(0),
+		mu:              &sync.Mutex{},
+		pendingRequests: make(map[uint64]chan RaftResponse),
 	}
 }
 
-// Start creates a listener and then blocks to accept new connections.
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", s.listenAddr)
-	if err != nil {
+	if err := s.transport.ListenAndAccept(); err != nil {
 		return err
 	}
-	s.ln = ln
 
-	for {
-		conn, err := s.ln.Accept()
-		if err != nil {
-			fmt.Printf("[%s]: Error accepting connection %s\n", s.listenAddr, err)
-		}
-		go s.handleConn(conn)
-	}
-}
-
-func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close()
-
-	var size uint32
-	for {
-		if err := binary.Read(conn, binary.LittleEndian, &size); err != nil {
-			if errors.Is(err, io.EOF) {
-				return
+	go s.handleCommittedEntries()
+	for transportMessage := range s.transport.Consume() {
+		switch transportMessage.PacketType {
+		case RaftPacket:
+			s.raft.InboundCh <- transportMessage.Payload
+		case FSPacket:
+			fsMessage, err := filesystem.DecodeMessage(transportMessage.Payload)
+			if err != nil {
+				fmt.Println(err)
+				continue
 			}
-			fmt.Printf("[%s]: Error reading message size from %s: %s\n", s.listenAddr, conn.RemoteAddr(), err)
+			if s.raft.IsLeader() {
+				go s.handleClientCommand(fsMessage)
+			} else {
+				// redirect msg to leader
+			}
+		default:
+			fmt.Printf("[%s]: Unknown packet type\n", "ser")
 		}
 
-		msgBug := make([]byte, size)
-		if _, err := io.ReadFull(conn, msgBug); err != nil {
-			fmt.Printf("[%s]: Error reading message from %s: %s\n", s.listenAddr, conn.RemoteAddr(), err)
-			continue
-		}
-		switch message.MessageType(msgBug[0]) {
-		case message.MessageMkdir:
-			fmt.Println("MKDIR")
-		case message.MessageWrite:
-			fmt.Println("WRT")
-		case message.MessageRead:
-			fmt.Println("RD")
-		case message.MessageDelete:
-			fmt.Println("DLT")
-		}
 	}
-
+	return nil
 }
-
+func (s *Server) handleCommittedEntries() {
+	for entry := range s.raft.ApplyCh {
+		err := s.applyCommand(entry.Data)
+		s.mu.Lock()
+		clientWaiter, exists := s.pendingRequests[entry.Index]
+		if exists {
+			// 3. Send the result back to the specific client handler
+			clientWaiter <- RaftResponse{err: err, index: entry.Index}
+			delete(s.pendingRequests, entry.Index)
+		}
+		s.mu.Unlock()
+	}
+}
+func (s *Server) applyCommand(cmd []byte) error {
+	_ = cmd
+	return nil
+}
+func (s *Server) handleClientCommand(msg filesystem.Message) error {
+	index := s.raft.Propose(msg.Payload)
+	respCh := make(chan RaftResponse, 1)
+	s.mu.Lock()
+	s.pendingRequests[index] = respCh
+	s.mu.Unlock()
+	// Ensure we clean up if we timeout
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingRequests, index)
+		s.mu.Unlock()
+	}()
+	select {
+	case resp := <-respCh:
+		return resp.err
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout: cluster took too long to agree")
+	}
+}
 func (s *Server) handleMkdirMsg(bufMsg []byte) error {
-	
+	return nil
 }

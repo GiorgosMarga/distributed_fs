@@ -43,22 +43,46 @@ func (l *Log) append(entry LogEntry) {
 	*l = append(*l, entry)
 }
 func (l *Log) truncateFromIndex(index uint64) {
-	*l = (*l)[:index]
+	if index == 0 {
+		return
+	}
+	index -= 1 // make it zero based
+	*l = (*l)[index:]
 }
 
 func (l Log) lastIndex() uint64 {
-	return uint64(len(l))
-}
-func (l Log) termAt(idx uint64) uint64 {
-	if idx >= uint64(len(l)) {
-		return 0
-	}
-	return l[idx].Term
+	return l[len(l)-1].Index
 }
 
-func (l Log) slice(from, to int) []LogEntry {
-	if from >= to || from <= 0 || to >= len(l) {
+func (l Log) lastTerm() uint64 {
+	return l[len(l)-1].Term
+}
+func (l Log) termAt(index uint64) uint64 {
+	if index == 0 {
+		return 0
+	}
+	index -= 1 // make it zero based
+	if index >= uint64(len(l)) {
+		return 0
+	}
+	return l[index].Term
+}
+
+func (l Log) slice(from, to uint64) []LogEntry {
+	if from >= to || from <= 0 || to > uint64(len(l)) {
 		return nil
 	}
+	from -= 1
 	return l[from:to]
+}
+func (l Log) hasMatchingEntry(prevIndex uint64, prevTerm uint64) bool {
+	if prevIndex == 0 {
+		return true
+	}
+
+	if prevIndex > l.lastIndex() {
+		return false
+	}
+
+	return l.termAt(prevIndex) == prevTerm
 }

@@ -1,26 +1,31 @@
 package raft
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+)
 
-type MsgType uint32
+type MsgType byte
 
 const (
-	MsgRequstVote MsgType = iota
+	MsgRequestVote MsgType = iota
 	MsgRequestVoteResp
 	MsgAppendEntries
 	MsgAppendEntriesResp
+	raftMax
 )
 
 type RaftMessage struct {
+	From    uint64
 	To      uint64
 	Type    MsgType
 	Payload []byte
 }
 
 func (rm RaftMessage) Encode() ([]byte, error) {
-	b := make([]byte, 0, 8+4+8+len(rm.Payload))
+	b := make([]byte, 0, 8+8+1+8+len(rm.Payload))
+	b = binary.LittleEndian.AppendUint64(b, rm.From)
 	b = binary.LittleEndian.AppendUint64(b, rm.To)
-	b = binary.LittleEndian.AppendUint32(b, uint32(rm.Type))
+	b = append(b, byte(rm.Type))
 	b = binary.LittleEndian.AppendUint64(b, uint64(len(rm.Payload)))
 	b = append(b, rm.Payload...)
 	return b, nil
@@ -29,10 +34,12 @@ func (rm RaftMessage) Encode() ([]byte, error) {
 func DecodeRaftMessage(b []byte) (RaftMessage, error) {
 	rm := RaftMessage{}
 	offset := 0
+	rm.From = binary.LittleEndian.Uint64(b[offset:])
+	offset += 8
 	rm.To = binary.LittleEndian.Uint64(b[offset:])
 	offset += 8
-	rm.Type = MsgType(binary.LittleEndian.Uint32(b[offset:]))
-	offset += 4
+	rm.Type = MsgType(b[offset])
+	offset += 1
 	payloadLen := binary.LittleEndian.Uint64(b[offset:])
 	offset += 8
 	payload := make([]byte, payloadLen)
@@ -74,6 +81,16 @@ type RequestVoteResp struct {
 	VoteGranted bool   // true means candidate received vote
 }
 
+func DecodeRequestVoteResp(b []byte) (RequestVoteResp, error) {
+	resp := RequestVoteResp{}
+	resp.Term = binary.LittleEndian.Uint64(b)
+	if b[8] == 1 {
+		resp.VoteGranted = true
+	} else {
+		resp.VoteGranted = false
+	}
+	return resp, nil
+}
 func (resp RequestVoteResp) Encode() ([]byte, error) {
 	return nil, nil
 }
@@ -147,9 +164,14 @@ func (r *AppendEntriesResp) Encode() ([]byte, error) {
 	binary.LittleEndian.PutUint64(b[1:], r.Term)
 	return b, nil
 }
-
-func createResponse(msg any, to uint64) ([]byte, error) {
-	resp := RaftMessage{
+func DecodeAppendEntriesResp(b []byte) (AppendEntriesResp, error) {
+	resp := AppendEntriesResp{}
+	resp.Success = b[0] == 1
+	resp.Term = binary.LittleEndian.Uint64(b[1:])
+	return resp, nil
+}
+func (r *Raft) sendMessage(msg any, to uint64) error {
+	raftMessage := RaftMessage{
 		To: to,
 	}
 	var (
@@ -158,15 +180,21 @@ func createResponse(msg any, to uint64) ([]byte, error) {
 	)
 	switch t := msg.(type) {
 	case RequestVoteResp:
-		resp.Type = MsgRequestVoteResp
+		raftMessage.Type = MsgRequestVoteResp
 		b, err = t.Encode()
 	case AppendEntriesResp:
-		resp.Type = MsgAppendEntriesResp
+		raftMessage.Type = MsgAppendEntriesResp
 		b, err = t.Encode()
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
-	resp.Payload = b
-	return resp.Encode()
+	raftMessage.Payload = b
+	b, err = raftMessage.Encode()
+	if err != nil {
+		return err
+	}
+
+	r.OutboundCh <- b
+	return nil
 }
