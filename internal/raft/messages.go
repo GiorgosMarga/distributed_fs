@@ -2,6 +2,7 @@ package raft
 
 import (
 	"encoding/binary"
+	"fmt"
 )
 
 type MsgType byte
@@ -92,7 +93,14 @@ func DecodeRequestVoteResp(b []byte) (RequestVoteResp, error) {
 	return resp, nil
 }
 func (resp RequestVoteResp) Encode() ([]byte, error) {
-	return nil, nil
+	b := make([]byte, 9)
+	binary.LittleEndian.PutUint64(b, resp.Term)
+	if resp.VoteGranted {
+		b[8] = 1
+	} else {
+		b[8] = 0
+	}
+	return b, nil
 }
 
 type AppendEntries struct {
@@ -111,13 +119,14 @@ func (ae *AppendEntries) Encode() ([]byte, error) {
 	b = binary.LittleEndian.AppendUint64(b, ae.PrevLogIndex)
 	b = binary.LittleEndian.AppendUint64(b, ae.PrevLogTerm)
 	b = binary.LittleEndian.AppendUint64(b, ae.LeaderCommit)
+
 	b = binary.LittleEndian.AppendUint64(b, uint64(len(ae.Entries)))
 	for _, entry := range ae.Entries {
 		entryBuf, err := entry.Encode()
 		if err != nil {
 			return nil, err
 		}
-		b = binary.LittleEndian.AppendUint64(b, uint64(len(entryBuf)))
+		// b = binary.LittleEndian.AppendUint64(b, uint64(len(entryBuf)))
 		b = append(b, entryBuf...)
 	}
 	return b, nil
@@ -131,10 +140,11 @@ func DecodeAppendEntries(b []byte) (AppendEntries, error) {
 	offset += 8
 	ae.PrevLogIndex = binary.LittleEndian.Uint64(b[offset:])
 	offset += 8
-	ae.PrevLogIndex = binary.LittleEndian.Uint64(b[offset:])
+	ae.PrevLogTerm = binary.LittleEndian.Uint64(b[offset:])
 	offset += 8
 	ae.LeaderCommit = binary.LittleEndian.Uint64(b[offset:])
 	offset += 8
+
 	numOfEntries := binary.LittleEndian.Uint64(b[offset:])
 	offset += 8
 	ae.Entries = make([]LogEntry, numOfEntries)
@@ -172,29 +182,37 @@ func DecodeAppendEntriesResp(b []byte) (AppendEntriesResp, error) {
 }
 func (r *Raft) sendMessage(msg any, to uint64) error {
 	raftMessage := RaftMessage{
-		To: to,
+		From: r.Id,
+		To:   to,
 	}
 	var (
 		b   []byte
 		err error
 	)
+
+	// fmt.Printf("Sending: %+v\n", msg)
 	switch t := msg.(type) {
+	case RequestVote:
+		raftMessage.Type = MsgRequestVote
+		b, err = t.Encode()
 	case RequestVoteResp:
 		raftMessage.Type = MsgRequestVoteResp
+		b, err = t.Encode()
+	case AppendEntries:
+		raftMessage.Type = MsgAppendEntries
 		b, err = t.Encode()
 	case AppendEntriesResp:
 		raftMessage.Type = MsgAppendEntriesResp
 		b, err = t.Encode()
 	}
 	if err != nil {
+		fmt.Println(err)
 		return err
 	}
 	raftMessage.Payload = b
-	b, err = raftMessage.Encode()
-	if err != nil {
-		return err
-	}
 
-	r.OutboundCh <- b
+	// fmt.Printf("Final raft message %+v\n", raftMessage)
+
+	r.OutboundCh <- raftMessage
 	return nil
 }

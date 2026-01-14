@@ -2,6 +2,7 @@ package raft
 
 import (
 	"encoding/binary"
+	"fmt"
 )
 
 type LogEntry struct {
@@ -43,18 +44,25 @@ func (l *Log) append(entry LogEntry) {
 	*l = append(*l, entry)
 }
 func (l *Log) truncateFromIndex(index uint64) {
-	if index == 0 {
+	if index == 0 || len(*l) == 0 {
 		return
 	}
 	index -= 1 // make it zero based
+	fmt.Println("keeping from ", index)
 	*l = (*l)[index:]
 }
 
 func (l Log) lastIndex() uint64 {
+	if len(l) == 0 {
+		return 0
+	}
 	return l[len(l)-1].Index
 }
 
 func (l Log) lastTerm() uint64 {
+	if len(l) == 0 {
+		return 0
+	}
 	return l[len(l)-1].Term
 }
 func (l Log) termAt(index uint64) uint64 {
@@ -69,7 +77,7 @@ func (l Log) termAt(index uint64) uint64 {
 }
 
 func (l Log) slice(from, to uint64) []LogEntry {
-	if from >= to || from <= 0 || to > uint64(len(l)) {
+	if from > to || from == 0 || to > uint64(len(l)) {
 		return nil
 	}
 	from -= 1

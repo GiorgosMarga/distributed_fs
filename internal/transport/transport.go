@@ -1,7 +1,12 @@
 package transport
 
+import (
+	"io"
+)
+
 type PacketType byte
 type TransportMessage struct {
+	Id         uint64
 	From       string
 	To         string
 	PacketType PacketType
@@ -9,5 +14,8 @@ type TransportMessage struct {
 }
 type Transport interface {
 	ListenAndAccept() error
-	Consume() chan TransportMessage
+	Close() error
+	Send(io.Writer, TransportMessage) error
+	Consume() <-chan TransportMessage
+	Connect(string) error
 }

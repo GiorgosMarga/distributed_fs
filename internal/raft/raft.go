@@ -7,8 +7,11 @@ import (
 	"time"
 )
 
+const MinPeers = 3
+
 type Role uint8
 
+const HeartbeatInterval = 100 // ms
 const (
 	Leader Role = iota
 	Candidate
@@ -17,7 +20,7 @@ const (
 
 type Raft struct {
 	// identity
-	id    uint64
+	Id    uint64
 	peers []uint64
 
 	// should be persistent
@@ -34,9 +37,9 @@ type Raft struct {
 	matchIndex map[uint64]uint64 // highest log index known to be replicated on peer p
 
 	role       Role
-	InboundCh  chan []byte   // messages from network
-	OutboundCh chan []byte   // messages to send
-	ApplyCh    chan LogEntry // committed entries to apply
+	InboundCh  chan []byte      // messages from network
+	OutboundCh chan RaftMessage // messages to send
+	ApplyCh    chan LogEntry    // committed entries to apply
 
 	// candidate state
 	grantedVotes   int
@@ -51,23 +54,23 @@ func randomDurationMs() time.Duration {
 	return time.Duration(rand.Intn(150)+150) * time.Millisecond
 }
 
-func NewRaft(id uint64) *Raft {
+func NewRaft(Id uint64) *Raft {
 	r := &Raft{
-		id:             id,
+		Id:             Id,
 		peers:          make([]uint64, 0),
 		currentTerm:    0,
 		lastApplied:    0,
 		votedFor:       0,
 		log:            NewLog(),
-		heartbeatTimer: time.NewTimer(randomDurationMs()), // random period from 150-300 ms
+		heartbeatTimer: time.NewTimer(time.Duration(HeartbeatInterval) * time.Millisecond), // random period from 150-300 ms
 		nextIndex:      make(map[uint64]uint64),
 		matchIndex:     make(map[uint64]uint64),
 		InboundCh:      make(chan []byte),
-		OutboundCh:     make(chan []byte),
+		OutboundCh:     make(chan RaftMessage),
 		ApplyCh:        make(chan LogEntry),
 		electionTimer:  time.NewTimer(randomDurationMs()),
 		role:           Follower,
-		applyCond:      &sync.Cond{},
+		applyCond:      sync.NewCond(&sync.Mutex{}),
 		mu:             &sync.Mutex{},
 	}
 	return r
@@ -84,9 +87,10 @@ func (r *Raft) heartbeatLoop() {
 		}
 		r.mu.Lock()
 		for _, peer := range r.peers {
+			// fmt.Printf("[%d]: Sending heartbeat to %d\n", r.Id, peer)
 			if err := r.sendMessage(AppendEntries{
 				Term:         r.currentTerm,
-				LeaderId:     r.id,
+				LeaderId:     r.Id,
 				PrevLogIndex: r.log.lastIndex(),
 				PrevLogTerm:  r.log.termAt(r.log.lastIndex()),
 				LeaderCommit: r.commitIndex,
@@ -96,39 +100,49 @@ func (r *Raft) heartbeatLoop() {
 				continue
 			}
 		}
-		r.heartbeatTimer.Reset(randomDurationMs())
+		r.heartbeatTimer.Reset(time.Duration(HeartbeatInterval) * time.Millisecond)
 		r.mu.Unlock()
 	}
 }
 
 func (r *Raft) Run() {
+	fmt.Printf("[%d]: Raft started\n", r.Id)
 	go r.applyLoop()
 	for {
 		select {
 		case msg := <-r.InboundCh:
 			raftMsg, err := DecodeRaftMessage(msg)
 			if err != nil {
+				fmt.Println(err)
 				continue
 			}
 			switch raftMsg.Type {
 			case MsgAppendEntries:
 				if err := r.handleAppendEntries(raftMsg.Payload); err != nil {
-					fmt.Printf("[%d]: ERROR %s\n", r.id, err)
+					fmt.Printf("[%d]: ERROR %s\n", r.Id, err)
 				}
 			case MsgRequestVote:
 				if err := r.handleRequestVote(raftMsg.Payload); err != nil {
-					fmt.Printf("[%d]: ERROR %s\n", r.id, err)
+					fmt.Printf("[%d]: ERROR %s\n", r.Id, err)
 				}
 			case MsgRequestVoteResp:
 				if err := r.handleRequestVoteResp(raftMsg.Payload); err != nil {
-					fmt.Printf("[%d]: ERROR %s\n", r.id, err)
+					fmt.Printf("[%d]: ERROR %s\n", r.Id, err)
 				}
 			case MsgAppendEntriesResp:
+				// fmt.Printf("[%d]: received append entries response\n", r.Id)
 				if err := r.handleAppendEntriesResp(raftMsg.Payload, raftMsg.From); err != nil {
-					fmt.Printf("[%d]: ERROR %s\n", r.id, err)
+					fmt.Printf("[%d]: ERROR %s\n", r.Id, err)
 				}
 			}
 		case <-r.electionTimer.C:
+			r.mu.Lock()
+			if r.role == Leader {
+				r.mu.Unlock()
+				continue
+			}
+			r.mu.Unlock()
+
 			r.handleElectionPeriod()
 		}
 	}
@@ -138,6 +152,7 @@ func (r *Raft) Run() {
 func (r *Raft) handleAppendEntriesResp(msg []byte, from uint64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	resp, err := DecodeAppendEntriesResp(msg)
 	if err != nil {
 		return nil
@@ -162,14 +177,19 @@ func (r *Raft) handleAppendEntriesResp(msg []byte, from uint64) error {
 	}
 	if r.nextIndex[from] > 1 {
 		r.nextIndex[from]--
+	} else {
+		fmt.Println("here")
+		return nil
 	}
-
+	// 2. Prepare the retry message
+	prevIndex := r.nextIndex[from] - 1
+	prevTerm := r.log.termAt(prevIndex) // Get term for that specific index
 	// Resend AppendEntries with the decremented nextIndex
 	return r.sendMessage(AppendEntries{
 		Term:         r.currentTerm,
-		LeaderId:     r.id,
-		PrevLogIndex: r.log.lastIndex(),
-		PrevLogTerm:  r.log.lastTerm(),
+		LeaderId:     r.Id,
+		PrevLogIndex: prevIndex,
+		PrevLogTerm:  prevTerm,
 		LeaderCommit: r.commitIndex,
 		Entries:      r.log.slice(r.nextIndex[from], r.log.lastIndex()),
 	}, from)
@@ -197,13 +217,18 @@ func (r *Raft) maybeAdvanceCommitIndex() {
 	}
 }
 
+func (r *Raft) AddPeer(id uint64) {
+	r.peers = append(r.peers, id)
+}
 func (r *Raft) handleElectionPeriod() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	fmt.Printf("[%d]: Starting an election\n", r.Id)
+
 	r.role = Candidate
 	r.currentTerm++
-	r.votedFor = r.id // Vote for self
+	r.votedFor = r.Id // Vote for self
 
 	r.grantedVotes = 1
 	// Reset timer with a random duration to prevent split votes
@@ -211,21 +236,26 @@ func (r *Raft) handleElectionPeriod() {
 	lastIdx := r.log.lastIndex()
 	req := RequestVote{
 		Term:         r.currentTerm,
-		CandidateId:  r.id,
+		CandidateId:  r.Id,
 		LastLogIndex: lastIdx,
 		LastLogTerm:  r.log.termAt(lastIdx),
 	}
 	for _, peer := range r.peers {
-		if peer == r.id {
+		if peer == r.Id {
 			continue
 		} // Don't send to self
-		go r.sendMessage(req, peer)
+		go func() {
+			if err := r.sendMessage(req, peer); err != nil {
+				fmt.Printf("[%d]: Error sending message to %d (%s)\n", r.Id, peer, err)
+			}
+		}()
 	}
 }
 
 func (r *Raft) handleRequestVoteResp(b []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	resp, err := DecodeRequestVoteResp(b)
 	if err != nil {
 		return err
@@ -240,7 +270,6 @@ func (r *Raft) handleRequestVoteResp(b []byte) error {
 	// 2. Only process the vote if we are still a candidate for THIS term
 	if r.role == Candidate && resp.VoteGranted && resp.Term == r.currentTerm {
 		r.grantedVotes++
-
 		// 3. Check for majority (N/2 + 1)
 		if r.grantedVotes >= (len(r.peers)/2 + 1) {
 			r.becomeLeader()
@@ -249,6 +278,7 @@ func (r *Raft) handleRequestVoteResp(b []byte) error {
 	return nil
 }
 func (r *Raft) becomeLeader() {
+	fmt.Printf("[%d]: New Leader\n", r.Id)
 	r.role = Leader
 
 	// Initialize leader state for all peers
@@ -287,24 +317,23 @@ func (r *Raft) Propose(data []byte) uint64 {
 	r.log.append(newEntry)
 
 	// 3. Update own matchIndex
-	r.matchIndex[r.id] = newEntry.Index
+	r.matchIndex[r.Id] = newEntry.Index
 
 	// 4. Trigger replication to all peers
 	for _, peer := range r.peers {
-		if peer == r.id {
+		if peer == r.Id {
 			continue
 		}
 		prevIdx := r.nextIndex[peer] - 1
 		prevTerm := r.log.termAt(prevIdx)
-		req := AppendEntries{
+		go r.sendMessage(AppendEntries{
 			Term:         r.currentTerm,
-			LeaderId:     r.id,
+			LeaderId:     r.Id,
 			PrevLogIndex: prevIdx,
 			PrevLogTerm:  prevTerm,
 			LeaderCommit: r.commitIndex,
 			Entries:      r.log.slice(r.nextIndex[peer], r.log.lastIndex()),
-		}
-		go r.sendMessage(req, peer)
+		}, peer)
 	}
 	return r.log.lastIndex()
 }
@@ -315,6 +344,9 @@ func (r *Raft) handleAppendEntries(msg []byte) error {
 	req, err := DecodeAppendEntries(msg)
 	if err != nil {
 		return err
+	}
+	if len(req.Entries) > 0 {
+		fmt.Printf("[%d]: Append entries msg%+v\n", r.Id, req)
 	}
 	if req.Term < r.currentTerm {
 		return r.sendMessage(AppendEntriesResp{
@@ -342,7 +374,16 @@ func (r *Raft) handleAppendEntries(msg []byte) error {
 
 	// 4. Append new entries and resolve conflicts
 	for _, entry := range req.Entries {
-		if r.log.termAt(entry.Index) != entry.Term {
+		// 1. If we don't have this index yet, just append everything from here on
+		if entry.Index > r.log.lastIndex() {
+			r.log.append(entry)
+			continue
+		}
+
+		// 2. If we HAVE the index, check if the terms match
+		existingTerm := r.log.termAt(entry.Index)
+		if existingTerm != entry.Term {
+			// CONFLICT: The leader is right, we are wrong.
 			r.log.truncateFromIndex(entry.Index)
 			r.log.append(entry)
 		}
@@ -353,6 +394,7 @@ func (r *Raft) handleAppendEntries(msg []byte) error {
 		// commitIndex = min(leaderCommit, index of last NEW entry)
 		lastIdx := r.log.lastIndex()
 		r.commitIndex = min(req.LeaderCommit, lastIdx)
+		r.applyCond.Signal()
 	}
 
 	return r.sendMessage(AppendEntriesResp{
@@ -411,15 +453,18 @@ func (r *Raft) handleRequestVote(msg []byte) error {
 
 func (r *Raft) applyLoop() {
 	for {
-		r.mu.Lock()
+		// lastApplied := r.lastApplied
+		// commitIndex := r.commitIndex
+		r.applyCond.L.Lock()
 		for r.lastApplied >= r.commitIndex {
 			r.applyCond.Wait()
 		}
+		r.applyCond.L.Unlock()
 
 		firstIndex := r.lastApplied + 1
 		lastIdx := r.commitIndex
 		entriesToApply := r.log.slice(firstIndex, lastIdx)
-		r.mu.Unlock()
+		// r.mu.Unlock()
 		for _, entry := range entriesToApply {
 			r.ApplyCh <- entry
 			r.mu.Lock()
@@ -431,8 +476,4 @@ func (r *Raft) applyLoop() {
 func (r *Raft) Consume() []byte {
 	entry := <-r.ApplyCh
 	return entry.Data
-}
-
-func (r *Raft) IsRaftMessage(messageType byte) bool {
-	return messageType < byte(raftMax)
 }
