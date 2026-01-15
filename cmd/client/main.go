@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -35,6 +36,8 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer resp.Body.Close()
+
 		if resp.StatusCode == 500 {
 			continue
 		}
@@ -55,9 +58,17 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer resp.Body.Close()
 		if resp.StatusCode == 500 {
 			continue
 		}
+		f, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println(err)
+			break
+		}
+		fmt.Println(string(f))
+
 		break
 	}
 }

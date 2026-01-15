@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io/fs"
 )
 
@@ -84,8 +85,13 @@ func (resp Response) Encode() []byte {
 	} else {
 		b = append(b, 0)
 	}
+	fmt.Println(resp)
+	if len(resp.Payload) == 0 {
+		return b[:9]
+	}
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(resp.Payload)))
 	b = append(b, resp.Payload...)
+
 	return b
 }
 
@@ -94,16 +100,20 @@ func DecodeAck(b []byte) (Response, error) {
 	offset := 0
 	resp.RespForId = binary.LittleEndian.Uint64(b[offset:])
 	offset += 8
-	if b[8] == 1 {
+	if b[offset] == 1 {
 		resp.Success = true
 	} else {
 		resp.Success = false
 	}
 	offset += 1
-	payloadLen := binary.LittleEndian.Uint32(b[offset:])
-	offset += 4
-	resp.Payload = make([]byte, payloadLen)
-	copy(resp.Payload, b[offset:offset+int(payloadLen)])
+	if offset < len(b) {
+		fmt.Println("here")
+		payloadLen := binary.LittleEndian.Uint32(b[offset:])
+		offset += 4
+		resp.Payload = make([]byte, payloadLen)
+		copy(resp.Payload, b[offset:offset+int(payloadLen)])
+	}
+
 	return resp, nil
 }
 

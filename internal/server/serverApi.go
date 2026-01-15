@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -76,12 +77,12 @@ func (s *Server) writeHandler(w http.ResponseWriter, r *http.Request) {
 
 	chunks := s.dfs.SplitIntoChunks(writeMsg.Chunk, 1024)
 	chunkIds := make([]string, 0, len(chunks))
-
+	fmt.Println(chunks)
 	// chunkid -> [server1,server2]
 	replicas := make(map[string][]string)
 
 	for i, chunk := range chunks {
-		peerOne := allPeers[i]
+		peerOne := allPeers[i%len(allPeers)]
 		peerTwo := allPeers[(i+2)%len(allPeers)]
 		// assume writes dont fail
 		chunkId := uuid.New().String()
@@ -152,26 +153,25 @@ func (s *Server) readHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// b := new(bytes.Buffer)
-
+	var (
+		fileBuf = new(bytes.Buffer)
+		data    []byte
+	)
 	for _, chunkId := range fileEntry.ChunkIDs {
 		servers := fileEntry.Replicas[chunkId]
 		if slices.Contains(servers, s.Address) {
-			b, err := s.dfs.Read(chunkId)
+			data, err = s.dfs.Read(chunkId)
 			if err != nil {
 				fmt.Println(err)
 			}
-			fmt.Println(string(b))
+
 		} else {
-			data, err := s.sendFsMsgWithAck(filesystem.ReadMessage{Path: []byte(chunkId)}, filesystem.MessageRead, servers[0])
+			data, err = s.sendFsMsgWithAck(filesystem.ReadMessage{Path: []byte(chunkId)}, filesystem.MessageRead, servers[0])
 			if err != nil {
 				fmt.Println(err)
 			}
-			fmt.Println(string(data))
 		}
-		// for _, serverId := range servers {
-		// 	fmt.Printf("%s\t", serverId)
-		// }
-		fmt.Println()
+		fileBuf.Write(data)
 	}
+	w.Write(fileBuf.Bytes())
 }

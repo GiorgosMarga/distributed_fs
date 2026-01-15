@@ -73,13 +73,21 @@ func (dfs *DFS) ReadMetadata(filename string) (MetadataEntry, error) {
 	}
 	return metadata, nil
 }
-
 func (dfs *DFS) SplitIntoChunks(file []byte, chunkSize int) [][]byte {
-	totalChunks := len(file) / chunkSize
+	// Round up the number of chunks: (total + size - 1) / size
+	totalChunks := (len(file) + chunkSize - 1) / chunkSize
 	chunks := make([][]byte, totalChunks)
-	for chunk := range totalChunks {
-		chunks[chunk] = make([]byte, chunkSize)
-		copy(chunks[chunk], file[chunk*chunkSize:min((chunk+1)*chunkSize, len(file))])
+
+	for i := 0; i < totalChunks; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if end > len(file) {
+			end = len(file)
+		}
+
+		// We create a copy so the original 'file' byte slice can be garbage collected
+		chunks[i] = make([]byte, end-start)
+		copy(chunks[i], file[start:end])
 	}
 	return chunks
 }
