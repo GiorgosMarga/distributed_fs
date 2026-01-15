@@ -2,6 +2,8 @@ package filesystem
 
 import (
 	"bytes"
+	"fmt"
+	"log"
 	"testing"
 	"time"
 )
@@ -40,5 +42,30 @@ func TestCopy(t *testing.T) {
 	if m.Timestamp != m2.Timestamp {
 		t.Error("Wrong ts")
 	}
+
+}
+
+func TestMetaDataMsg(t *testing.T) {
+	msg := MetadataMessage{
+		MetadataEntry: MetadataEntry{
+			Name:     "test name",
+			Size:     1024,
+			ChunkIDs: []string{"1", "20", "300"},
+			Replicas: map[string][]string{
+				"1":   {"server1", "server2"},
+				"20":  {"server2", "server3"},
+				"300": {"server3", "server4"},
+			},
+		},
+	}
+
+	b := msg.Encode()
+	fmt.Println(b)
+	msg2, err := DecodeMetadataMsg(b)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("%+v\n", msg2)
 
 }

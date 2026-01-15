@@ -70,31 +70,41 @@ func DecodeMessage(b []byte) (Message, error) {
 	return m, nil
 }
 
-type ACK struct {
-	Id      uint64
-	Success bool
+type Response struct {
+	RespForId uint64 //the id of the message that this message responds to
+	Payload   []byte
+	Success   bool
 }
 
-func (ack ACK) Encode() []byte {
-	b := make([]byte, 0, 9)
-	b = binary.LittleEndian.AppendUint64(b, ack.Id)
-	if ack.Success {
+func (resp Response) Encode() []byte {
+	b := make([]byte, 0, 13+len(resp.Payload))
+	b = binary.LittleEndian.AppendUint64(b, resp.RespForId)
+	if resp.Success {
 		b = append(b, 1)
 	} else {
 		b = append(b, 0)
 	}
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(resp.Payload)))
+	b = append(b, resp.Payload...)
 	return b
 }
 
-func DecodeAck(b []byte) (ACK, error) {
-	ack := ACK{}
-	ack.Id = binary.LittleEndian.Uint64(b)
+func DecodeAck(b []byte) (Response, error) {
+	resp := Response{}
+	offset := 0
+	resp.RespForId = binary.LittleEndian.Uint64(b[offset:])
+	offset += 8
 	if b[8] == 1 {
-		ack.Success = true
+		resp.Success = true
 	} else {
-		ack.Success = false
+		resp.Success = false
 	}
-	return ack, nil
+	offset += 1
+	payloadLen := binary.LittleEndian.Uint32(b[offset:])
+	offset += 4
+	resp.Payload = make([]byte, payloadLen)
+	copy(resp.Payload, b[offset:offset+int(payloadLen)])
+	return resp, nil
 }
 
 type MkdirMessage struct {
@@ -183,55 +193,81 @@ func DecodeWriteMsg(b []byte) (WriteMessage, error) {
 	copy(msg.Path, b[offset:offset+pathLen])
 	offset += pathLen
 	chunkLen := binary.LittleEndian.Uint32(b[offset:])
+	offset += 4
 	msg.Chunk = make([]byte, chunkLen)
 	copy(msg.Chunk, b[offset:offset+chunkLen])
 	return msg, nil
 }
 
 type MetadataMessage struct {
-	ChunkIds [][]byte
-	Servers  [][]byte
+	MetadataEntry
 }
 
 func (m MetadataMessage) Encode() []byte {
 	b := make([]byte, 0)
-	b = binary.LittleEndian.AppendUint32(b, uint32(len(m.ChunkIds)))
-	for _, chunkId := range m.ChunkIds {
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(m.Name)))
+	b = append(b, []byte(m.Name)...)
+
+	b = binary.LittleEndian.AppendUint64(b, m.Size)
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(m.ChunkIDs)))
+	for _, chunkId := range m.ChunkIDs {
 		b = binary.LittleEndian.AppendUint32(b, uint32(len(chunkId)))
-		b = append(b, chunkId...)
+		b = append(b, []byte(chunkId)...)
 	}
-	b = binary.LittleEndian.AppendUint32(b, uint32(len(m.Servers)))
-	for _, serverId := range m.Servers {
-		b = binary.LittleEndian.AppendUint32(b, uint32(len(serverId)))
-		b = append(b, serverId...)
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(m.Replicas)))
+	for chunkId, replica := range m.Replicas {
+		b = binary.LittleEndian.AppendUint32(b, uint32(len(chunkId)))
+		b = append(b, []byte(chunkId)...)
+
+		b = binary.LittleEndian.AppendUint32(b, uint32(len(replica)))
+		for _, serverId := range replica {
+			b = binary.LittleEndian.AppendUint32(b, uint32(len(serverId)))
+			b = append(b, []byte(serverId)...)
+		}
 	}
 	return b
 }
 
 func DecodeMetadataMsg(b []byte) (MetadataMessage, error) {
-	msg := MetadataMessage{}
+	metadata := MetadataMessage{}
 	var offset uint32 = 0
-	totalChunks := binary.LittleEndian.Uint32(b[offset:])
+	nameSize := binary.LittleEndian.Uint32(b[offset:])
 	offset += 4
-	msg.ChunkIds = make([][]byte, totalChunks)
+	metadata.Name = string(b[offset : offset+nameSize])
+	offset += nameSize
 
-	for i := range totalChunks {
+	metadata.Size = binary.LittleEndian.Uint64(b[offset:])
+	offset += 8
+	chunkIdsSize := binary.LittleEndian.Uint32(b[offset:])
+	offset += 4
+	metadata.ChunkIDs = make([]string, 0, chunkIdsSize)
+
+	for range chunkIdsSize {
 		chunkSize := binary.LittleEndian.Uint32(b[offset:])
 		offset += 4
-		msg.ChunkIds[i] = make([]byte, chunkSize)
-		copy(msg.ChunkIds[i], b[offset:offset+chunkSize])
+		metadata.ChunkIDs = append(metadata.ChunkIDs, string(b[offset:offset+chunkSize]))
 		offset += chunkSize
 	}
-	totalServers := binary.LittleEndian.Uint32(b[offset:])
-	offset += 4
-	msg.Servers = make([][]byte, totalServers)
 
-	for i := range totalServers {
-		serverSize := binary.LittleEndian.Uint32(b[offset:])
+	replicasLen := binary.LittleEndian.Uint32(b[offset:])
+	offset += 4
+	metadata.Replicas = make(map[string][]string, replicasLen)
+	for range replicasLen {
+		chunkIdLen := binary.LittleEndian.Uint32(b[offset:])
 		offset += 4
-		msg.Servers[i] = make([]byte, serverSize)
-		copy(msg.Servers[i], b[offset:offset+serverSize])
-		offset += serverSize
+		filename := string(b[offset : offset+chunkIdLen])
+		offset += chunkIdLen
+
+		replicas := binary.LittleEndian.Uint32(b[offset:])
+		offset += 4
+		serverIds := make([]string, 0, replicas)
+		for range replicas {
+			serverSize := binary.LittleEndian.Uint32(b[offset:])
+			offset += 4
+			serverIds = append(serverIds, string(b[offset:offset+serverSize]))
+			offset += serverSize
+		}
+		metadata.Replicas[filename] = serverIds
 	}
-	return msg, nil
+	return metadata, nil
 }

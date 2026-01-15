@@ -13,9 +13,9 @@ var (
 )
 
 type Peer struct {
-	address   string
-	conn      net.Conn
-	isInbound bool
+	Address   string
+	Conn      net.Conn
+	IsInbound bool
 }
 
 const (
@@ -101,9 +101,9 @@ func (t *TCPTransport) handleConn(conn net.Conn, isInbound bool) {
 	}
 
 	peer := Peer{
-		conn:      conn,
-		isInbound: isInbound,
-		address:   remoteAddr,
+		Conn:      conn,
+		IsInbound: isInbound,
+		Address:   remoteAddr,
 	}
 	// i initiated the connection
 	if err := t.OnNewPeer(peer); err != nil {
