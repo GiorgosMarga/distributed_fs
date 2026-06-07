@@ -106,7 +106,7 @@ func (resp RequestVoteResp) Encode() ([]byte, error) {
 type AppendEntries struct {
 	Term         uint64     // leaders term
 	LeaderId     uint64     // so follower can redirect clients
-	PrevLogIndex uint64     //index of log entry immediately preceding new ones
+	PrevLogIndex uint64     //i ndex of log entry immediately preceding new ones
 	PrevLogTerm  uint64     // term of prevLogIndex entry
 	LeaderCommit uint64     // leaders commit index
 	Entries      []LogEntry // empty for heartbeat
@@ -160,18 +160,20 @@ func DecodeAppendEntries(b []byte) (AppendEntries, error) {
 }
 
 type AppendEntriesResp struct {
-	Success bool   //true if follower contained entry matching prevLogIndex and prevLogTerm
+	Success bool   // true if follower contained entry matching prevLogIndex and prevLogTerm
 	Term    uint64 // currentTerm, for leader to update itself
 }
 
 func (r *AppendEntriesResp) Encode() ([]byte, error) {
-	b := make([]byte, 9)
+	b := make([]byte, 25)
+	offset := 0
 	if r.Success == false {
-		b[0] = 0
+		b[offset] = 0
 	} else {
-		b[0] = 1
+		b[offset] = 1
 	}
-	binary.LittleEndian.PutUint64(b[1:], r.Term)
+	offset += 1
+	binary.LittleEndian.PutUint64(b[offset:], r.Term)
 	return b, nil
 }
 func DecodeAppendEntriesResp(b []byte) (AppendEntriesResp, error) {
@@ -214,5 +216,6 @@ func (r *Raft) sendMessage(msg any, to uint64) error {
 	// fmt.Printf("Final raft message %+v\n", raftMessage)
 
 	r.OutboundCh <- raftMessage
+
 	return nil
 }

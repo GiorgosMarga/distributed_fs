@@ -1,4 +1,4 @@
-package filesystem
+package contracts
 
 import (
 	"encoding/binary"
@@ -23,7 +23,7 @@ const (
 	MessageHeaderSize = 4 + 4 + 4 + 8 + 1 + 4
 )
 
-type Message struct {
+type FsMessage struct {
 	ID        uint32
 	From      []byte
 	To        []byte
@@ -32,7 +32,7 @@ type Message struct {
 	Payload   []byte
 }
 
-func (m Message) Encode() ([]byte, error) {
+func (m FsMessage) Encode() ([]byte, error) {
 	b := make([]byte, 0, MessageHeaderSize+len(m.From)+len(m.To)+len(m.Payload))
 	b = binary.LittleEndian.AppendUint32(b, m.ID)
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(m.From)))
@@ -45,8 +45,8 @@ func (m Message) Encode() ([]byte, error) {
 	b = append(b, m.Payload...)
 	return b, nil
 }
-func DecodeMessage(b []byte) (Message, error) {
-	m := Message{}
+func DecodeMessage(b []byte) (FsMessage, error) {
+	m := FsMessage{}
 	var offset uint32 = 0
 	m.ID = binary.LittleEndian.Uint32(b)
 	offset += 4
@@ -107,7 +107,6 @@ func DecodeAck(b []byte) (Response, error) {
 	}
 	offset += 1
 	if offset < len(b) {
-		fmt.Println("here")
 		payloadLen := binary.LittleEndian.Uint32(b[offset:])
 		offset += 4
 		resp.Payload = make([]byte, payloadLen)
@@ -210,7 +209,11 @@ func DecodeWriteMsg(b []byte) (WriteMessage, error) {
 }
 
 type MetadataMessage struct {
-	MetadataEntry
+	Name     string
+	Size     uint64
+	ChunkIDs []string
+	// chunk id => [server1, server2...]
+	Replicas map[string][]string
 }
 
 func (m MetadataMessage) Encode() []byte {

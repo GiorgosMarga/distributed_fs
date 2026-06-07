@@ -4,11 +4,13 @@ import (
 	"encoding/gob"
 	"io"
 	"sync"
+
+	"github.com/GiorgosMarga/dfs/internal/contracts"
 )
 
 type Serializer interface {
-	Encode(io.Writer, TransportMessage) error
-	Decode(io.Reader) (TransportMessage, error)
+	Encode(io.Writer, contracts.TransportMessage) error
+	Decode(io.Reader) (contracts.TransportMessage, error)
 }
 
 type GOBSerializer struct {
@@ -26,7 +28,7 @@ func NewGOBSerializer() *GOBSerializer {
 	}
 }
 
-func (g *GOBSerializer) Encode(w io.Writer, msg TransportMessage) error {
+func (g *GOBSerializer) Encode(w io.Writer, msg contracts.TransportMessage) error {
 	g.mu.Lock()
 	enc, ok := g.encoders[w]
 	if !ok {
@@ -37,7 +39,7 @@ func (g *GOBSerializer) Encode(w io.Writer, msg TransportMessage) error {
 	return enc.Encode(msg)
 }
 
-func (g *GOBSerializer) Decode(r io.Reader) (TransportMessage, error) {
+func (g *GOBSerializer) Decode(r io.Reader) (contracts.TransportMessage, error) {
 	g.mu.Lock()
 	dec, ok := g.decoders[r]
 	if !ok {
@@ -46,7 +48,7 @@ func (g *GOBSerializer) Decode(r io.Reader) (TransportMessage, error) {
 	}
 	g.mu.Unlock()
 
-	var msg TransportMessage
+	var msg contracts.TransportMessage
 	err := dec.Decode(&msg)
 	return msg, err
 }

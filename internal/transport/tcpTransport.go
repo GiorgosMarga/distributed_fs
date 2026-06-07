@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"sync"
+
+	"github.com/GiorgosMarga/dfs/internal/contracts"
 )
 
 var (
@@ -13,53 +15,49 @@ var (
 )
 
 type Peer struct {
-	Address   string
-	Conn      net.Conn
-	IsInbound bool
+	TransportAddress string
+	Conn             net.Conn
+	IsInbound        bool
 }
 
-const (
-	RaftPacket PacketType = iota
-	FSPacket
-	HandshakePacket
-)
+type OnNewPeerFunc func(conn net.Conn, isInbound bool) error
 
-type OnNewPeerFunc func(Peer) error
+// TODO: not used right now, (handshake should be included on the new peer)
 type HandshakeFunc func(net.Conn) (string, error)
 
 func DefaultHandshake(conn net.Conn) (string, error) {
 	return conn.RemoteAddr().String(), nil
 }
 
-func DefaultOnNewPeer(_ Peer) error {
+func DefaultOnNewPeer(_ net.Conn, _ bool) error {
 	return nil
 }
 
 type TCPTransportOpts struct {
 	Serializer Serializer
 	OnNewPeer  OnNewPeerFunc
-	Handshake  HandshakeFunc
+	// Handshake HandshakeFunc
 }
 type TCPTransport struct {
 	TCPTransportOpts
 	ln      net.Listener
 	address string
-	msgChan chan TransportMessage
+	msgChan chan contracts.TransportMessage
 	mu      *sync.Mutex
 }
 
 func NewTCPTransport(address string, opts TCPTransportOpts) *TCPTransport {
 	t := &TCPTransport{
 		address: address,
-		msgChan: make(chan TransportMessage),
+		msgChan: make(chan contracts.TransportMessage),
 		mu:      &sync.Mutex{},
 	}
 	if opts.OnNewPeer == nil {
 		opts.OnNewPeer = DefaultOnNewPeer
 	}
-	if opts.Handshake == nil {
-		opts.Handshake = DefaultHandshake
-	}
+	// if opts.Handshake == nil {
+	// 	opts.Handshake = DefaultHandshake
+	// }
 	t.TCPTransportOpts = opts
 	return t
 }
@@ -94,20 +92,9 @@ func (t *TCPTransport) acceptLoop() {
 func (t *TCPTransport) handleConn(conn net.Conn, isInbound bool) {
 	defer conn.Close()
 
-	remoteAddr, err := t.Handshake(conn)
-	if err != nil {
-		fmt.Printf("[%s]: Error handshaking (%s): %s\n", t.address, conn.RemoteAddr().String(), err)
-		return
-	}
-
-	peer := Peer{
-		Conn:      conn,
-		IsInbound: isInbound,
-		Address:   remoteAddr,
-	}
 	// i initiated the connection
-	if err := t.OnNewPeer(peer); err != nil {
-		fmt.Printf("[%s]: on new peer error: %s\n", t.address, err)
+	if err := t.OnNewPeer(conn, isInbound); err != nil {
+		fmt.Printf("[%s]: Error registering peer: %s\n", t.address, err)
 		return
 	}
 
@@ -125,11 +112,11 @@ func (t *TCPTransport) handleConn(conn net.Conn, isInbound bool) {
 	}
 
 }
-func (t *TCPTransport) Consume() <-chan TransportMessage {
+func (t *TCPTransport) Consume() <-chan contracts.TransportMessage {
 	return t.msgChan
 }
 
-func (t *TCPTransport) Send(w io.Writer, msg TransportMessage) error {
+func (t *TCPTransport) Send(w io.Writer, msg contracts.TransportMessage) error {
 	return t.Serializer.Encode(w, msg)
 }
 
@@ -141,5 +128,3 @@ func (t *TCPTransport) Connect(address string) error {
 	go t.handleConn(conn, false)
 	return nil
 }
-
-

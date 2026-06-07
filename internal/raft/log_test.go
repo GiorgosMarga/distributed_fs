@@ -13,3 +13,17 @@ func TestLog(t *testing.T) {
 
 	fmt.Println(log.slice(1, log.lastIndex()))
 }
+
+func TestEntryEncodeDecode(t *testing.T) {
+	entry := LogEntry{
+		Index: 10,
+		Term:  1,
+		Data:  []byte("hello"),
+	}
+
+	b, _ := entry.Encode()
+
+	newEntry, _ := DecodeLogEntry(b)
+
+	fmt.Printf("%+v\n", newEntry)
+}

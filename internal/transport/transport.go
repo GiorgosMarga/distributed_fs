@@ -2,20 +2,14 @@ package transport
 
 import (
 	"io"
+
+	"github.com/GiorgosMarga/dfs/internal/contracts"
 )
 
-type PacketType byte
-type TransportMessage struct {
-	Id         uint64
-	From       string
-	To         string
-	PacketType PacketType
-	Payload    []byte
-}
 type Transport interface {
 	ListenAndAccept() error
 	Close() error
-	Send(io.Writer, TransportMessage) error
-	Consume() <-chan TransportMessage
+	Send(io.Writer, contracts.TransportMessage) error
+	Consume() <-chan contracts.TransportMessage
 	Connect(string) error
 }
